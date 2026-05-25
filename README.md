@@ -27,7 +27,7 @@ pip install -r requirements.txt
 ### 3. 서버 실행
 
 ```bash
-uvicorn server:app --reload
+uvicorn main:app --reload
 ```
 
 서버가 `http://localhost:8000` 에서 실행됩니다.

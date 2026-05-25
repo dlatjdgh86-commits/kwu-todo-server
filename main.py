@@ -4,6 +4,9 @@
    또는 python main.py (WinForms subprocess 실행용)
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
