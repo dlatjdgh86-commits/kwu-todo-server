@@ -7,7 +7,7 @@ import os
 import logging
 import uuid
 from datetime import datetime, date, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, status, Query
 
@@ -152,7 +152,7 @@ def generate_todos(
             based_on_schedules=[],
         )
 
-    generated_todos: list[TodoResponse] = []
+    generated_todos: List[TodoResponse] = []
     for sched in target_schedules:
         todo = TodoResponse(
             id=str(uuid.uuid4()),
@@ -179,7 +179,7 @@ def generate_todos(
 
 @router.get(
     "",
-    response_model=list[TodoResponse],
+    response_model=List[TodoResponse],
     summary="TODO 전체 조회",
 )
 def get_todos(

@@ -5,7 +5,7 @@ routes/schedules.py
 
 from fastapi import APIRouter, HTTPException, status, Query
 from datetime import date
-from typing import Optional
+from typing import Optional, List
 import uuid
 
 from schemas import ScheduleResponse, MessageResponse
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/schedules", tags=["학사일정"])
 
 @router.get(
     "",
-    response_model=list[ScheduleResponse],
+    response_model=List[ScheduleResponse],
     summary="학사일정 목록 조회",
     description="크롤링된 학사일정 목록을 반환합니다. refresh=true 시 재크롤링 후 반환합니다.",
 )

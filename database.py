@@ -13,6 +13,7 @@ import sqlite3
 import logging
 from pathlib import Path
 from datetime import datetime, date
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +120,14 @@ class TodoStore:
                 raise KeyError(todo_id)
             return _row_to_dict(row)
 
-    def values(self) -> list[dict]:
+    def values(self) -> List[dict]:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM todos ORDER BY created_at DESC"
             ).fetchall()
             return [_row_to_dict(r) for r in rows]
 
-    def keys(self) -> list[str]:
+    def keys(self) -> List[str]:
         with self._conn() as conn:
             rows = conn.execute("SELECT id FROM todos").fetchall()
             return [r["id"] for r in rows]

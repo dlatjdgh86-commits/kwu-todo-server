@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date, timedelta
 from enum import IntEnum
-from typing import Optional
+from typing import Optional, List, Tuple, Set, Union
 
 from crawler import AcademicEvent, LMSAssignment, EverytimePost, CrawledData
 from llm_client import BaseLLMClient, PromptTemplates, create_llm_client
@@ -46,7 +46,7 @@ class TodoItem:
     priority_reason: str = ""
     due_date: Optional[str] = None       # YYYY-MM-DD
     estimated_hours: float = 1.0
-    subtasks: list[str] = field(default_factory=list)
+    subtasks: List[str] = field(default_factory=list)
     source: str = ""
     completed: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -74,11 +74,11 @@ class TodoItem:
 
 @dataclass
 class TodoList:
-    items: list[TodoItem] = field(default_factory=list)
+    items: List[TodoItem] = field(default_factory=list)
     summary: str = ""
     generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
-    def sorted_by_priority(self) -> list[TodoItem]:
+    def sorted_by_priority(self) -> List[TodoItem]:
         return sorted(
             self.items,
             key=lambda t: (
@@ -87,7 +87,7 @@ class TodoList:
             )
         )
 
-    def filter_by_priority(self, max_priority: int) -> list[TodoItem]:
+    def filter_by_priority(self, max_priority: int) -> List[TodoItem]:
         return [t for t in self.items if t.priority <= max_priority]
 
     def to_dict(self) -> dict:
@@ -127,7 +127,7 @@ class PriorityCalculator:
     CRITICAL_KEYWORDS = ["중간고사", "기말고사", "수강신청", "마감", "긴급", "시험"]
     HIGH_KEYWORDS = ["과제", "제출", "퀴즈", "발표", "프로젝트", "레포트"]
 
-    def calculate(self, title: str, category: str, due_date: Optional[str]) -> tuple[int, str]:
+    def calculate(self, title: str, category: str, due_date: Optional[str]) -> Tuple[int, str]:
         """
         Returns:
             (priority: int, reason: str)
@@ -188,7 +188,7 @@ class TodoParser:
     """LLM이 반환한 JSON을 TodoItem 리스트로 변환"""
 
     @staticmethod
-    def parse(raw: dict | list) -> list[TodoItem]:
+    def parse(raw: Union[dict, list]) -> List[TodoItem]:
         if isinstance(raw, list):
             todos_data = raw
             summary = ""
@@ -279,7 +279,7 @@ class TodoGenerator:
 
     def _generate_with_llm(
         self, data: CrawledData, today_str: str
-    ) -> tuple[list[TodoItem], str]:
+    ) -> Tuple[List[TodoItem], str]:
         prompt = PromptTemplates.build_todo_prompt(
             academic_events=data.academic_events,
             lms_assignments=data.lms_assignments,
@@ -296,9 +296,9 @@ class TodoGenerator:
 
     def _generate_with_rules(
         self, data: CrawledData
-    ) -> tuple[list[TodoItem], str]:
+    ) -> Tuple[List[TodoItem], str]:
         """LLM 없이 규칙만으로 TODO 생성 (폴백)"""
-        todos: list[TodoItem] = []
+        todos: List[TodoItem] = []
 
         # 학사 일정 → TODO
         for i, event in enumerate(data.academic_events):
@@ -359,7 +359,7 @@ class TodoGenerator:
         summary = f"규칙 기반으로 {len(todos)}개 TODO 생성됨"
         return todos, summary
 
-    def _validate_and_fix_priorities(self, todos: list[TodoItem]) -> list[TodoItem]:
+    def _validate_and_fix_priorities(self, todos: List[TodoItem]) -> List[TodoItem]:
         """
         LLM이 생성한 우선순위를 규칙 기반으로 검증하고 필요 시 보정
         - LLM이 너무 낮게 설정한 긴급 마감 항목을 상향
@@ -381,10 +381,10 @@ class TodoGenerator:
 
         return todos
 
-    def _deduplicate(self, todos: list[TodoItem]) -> list[TodoItem]:
+    def _deduplicate(self, todos: List[TodoItem]) -> List[TodoItem]:
         """유사한 제목의 TODO 중복 제거"""
-        seen_titles: set[str] = set()
-        unique: list[TodoItem] = []
+        seen_titles: Set[str] = set()
+        unique: List[TodoItem] = []
         for todo in todos:
             normalized = todo.title.strip().lower()
             if normalized not in seen_titles:

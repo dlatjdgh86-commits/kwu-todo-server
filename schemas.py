@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from datetime import date, datetime
 import uuid
 
@@ -63,7 +63,7 @@ class ScheduleResponse(BaseModel):
 
 class GenerateTodoRequest(BaseModel):
     """GET /todos/generate 쿼리 파라미터 대신 바디로 받을 경우 사용"""
-    schedule_ids: Optional[list[str]] = Field(
+    schedule_ids: Optional[List[str]] = Field(
         None, description="특정 학사일정 ID 목록 (없으면 전체 기반으로 생성)"
     )
     period_days: int = Field(30, ge=1, le=180, description="앞으로 며칠치 일정을 기반으로 생성할지")
@@ -71,9 +71,9 @@ class GenerateTodoRequest(BaseModel):
 
 class GenerateTodoResponse(BaseModel):
     """AI가 생성한 TODO 목록 응답 — C# TodoResponse와 매핑"""
-    todos: list[TodoResponse]
+    todos: List[TodoResponse]
     generated_count: int
-    based_on_schedules: list[str] = Field(..., description="참고한 학사일정 제목 목록")
+    based_on_schedules: List[str] = Field(..., description="참고한 학사일정 제목 목록")
 
 
 # ────────────────────────────────────────────────

@@ -8,7 +8,7 @@ import time
 import logging
 from datetime import datetime, date
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -46,7 +46,7 @@ class EverytimePost:
     title: str
     body: str
     posted_at: Optional[datetime] = None
-    keywords: list[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
     source: str = "everytime"
 
 
@@ -90,7 +90,7 @@ class KwangwoonAcademicCalendarCrawler:
                 return cat
         return "기타"
 
-    def _parse_date_range(self, raw: str) -> tuple[Optional[date], Optional[date]]:
+    def _parse_date_range(self, raw: str) -> Tuple[Optional[date], Optional[date]]:
         """
         '2025.03.04 ~ 2025.03.07' 또는 '2025.03.04' 형태 파싱
         """
@@ -109,7 +109,7 @@ class KwangwoonAcademicCalendarCrawler:
         end = to_date(parts[1]) if len(parts) > 1 else None
         return start, end
 
-    def crawl(self) -> list[AcademicEvent]:
+    def crawl(self) -> List[AcademicEvent]:
         logger.info(f"[광운대] 학사 일정 크롤링 시작 ({self.year}년 {self.semester}학기)")
         try:
             resp = self.session.get(self.CALENDAR_URL, timeout=15)
@@ -119,7 +119,7 @@ class KwangwoonAcademicCalendarCrawler:
             return []
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        events: list[AcademicEvent] = []
+        events: List[AcademicEvent] = []
 
         # ── 전략 1: <table> 기반 파싱 (광운대 학사일정 테이블 구조)
         for table in soup.find_all("table"):
@@ -159,7 +159,7 @@ class KwangwoonAcademicCalendarCrawler:
         logger.info(f"[광운대] 수집된 이벤트: {len(events)}건")
         return events
 
-    def _filter_by_semester(self, events: list[AcademicEvent]) -> list[AcademicEvent]:
+    def _filter_by_semester(self, events: List[AcademicEvent]) -> List[AcademicEvent]:
         if self.semester == 1:
             start_month, end_month = 2, 8
         else:
@@ -262,14 +262,14 @@ class LMSCrawler:
             return "출석"
         return "과제"
 
-    def crawl(self) -> list[LMSAssignment]:
+    def crawl(self) -> List[LMSAssignment]:
         if not self._logged_in:
             success = self.login()
             if not success:
                 return []
 
         logger.info("[LMS] 마감 임박 과제 수집 중...")
-        assignments: list[LMSAssignment] = []
+        assignments: List[LMSAssignment] = []
 
         try:
             resp = self.session.get(self.UPCOMING_URL, timeout=15)
@@ -329,7 +329,7 @@ class EverytimeCrawler:
         "레포트", "발표", "팀플", "프로젝트", "휴강", "보강",
     ]
 
-    def __init__(self, username: str, password: str, keywords: list[str] = None):
+    def __init__(self, username: str, password: str, keywords: List[str] = None):
         self.username = username
         self.password = password
         self.filter_keywords = keywords or self.ACADEMIC_KEYWORDS
@@ -362,10 +362,10 @@ class EverytimeCrawler:
             logger.error(f"[에브리타임] 로그인 오류: {e}")
             return False
 
-    def _extract_keywords(self, text: str) -> list[str]:
+    def _extract_keywords(self, text: str) -> List[str]:
         return [kw for kw in self.filter_keywords if kw in text]
 
-    def _parse_posts(self, html: str, board_name: str) -> list[EverytimePost]:
+    def _parse_posts(self, html: str, board_name: str) -> List[EverytimePost]:
         soup = BeautifulSoup(html, "html.parser")
         posts = []
 
@@ -401,14 +401,14 @@ class EverytimeCrawler:
 
         return posts
 
-    def crawl(self, boards: list[str] = None) -> list[EverytimePost]:
+    def crawl(self, boards: List[str] = None) -> List[EverytimePost]:
         if not self._logged_in:
             success = self.login()
             if not success:
                 return []
 
         target_boards = boards or list(self.BOARD_URLS.keys())
-        all_posts: list[EverytimePost] = []
+        all_posts: List[EverytimePost] = []
 
         for board_name in target_boards:
             url = self.BOARD_URLS.get(board_name)
@@ -433,9 +433,9 @@ class EverytimeCrawler:
 
 @dataclass
 class CrawledData:
-    academic_events: list[AcademicEvent] = field(default_factory=list)
-    lms_assignments: list[LMSAssignment] = field(default_factory=list)
-    everytime_posts: list[EverytimePost] = field(default_factory=list)
+    academic_events: List[AcademicEvent] = field(default_factory=list)
+    lms_assignments: List[LMSAssignment] = field(default_factory=list)
+    everytime_posts: List[EverytimePost] = field(default_factory=list)
 
     def summary(self) -> str:
         return (

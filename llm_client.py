@@ -8,7 +8,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,9 @@ class LLMResponse:
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
-    raw: dict = None  # 원본 응답 보존
+    raw: Optional[Dict] = None  # 원본 응답 보존
 
-    def parse_json(self) -> dict | list:
+    def parse_json(self) -> Union[dict, list]:
         """응답에서 JSON 파싱 (```json 펜스 자동 제거)"""
         text = self.content.strip()
         # 마크다운 코드펜스 제거
@@ -58,7 +58,7 @@ class BaseLLMClient(ABC):
         user_message: str,
         system_prompt: str = "",
         max_tokens: int = 2048,
-    ) -> dict | list:
+    ) -> Union[dict, list]:
         """JSON 응답을 자동 파싱하여 반환"""
         json_system = (
             system_prompt + "\n\n반드시 JSON 형식으로만 응답하세요. "
