@@ -58,14 +58,20 @@ def _convert_generated_todo(item) -> TodoResponse:
     due: Optional[date] = None
     if item.due_date:
         try:
-            due = datetime.strptime(item.due_date, "%Y-%m-%d").date()
-        except ValueError:
+            if isinstance(item.due_date, date):   # 이미 date 객체
+                due = item.due_date
+            else:                                  # 문자열 "YYYY-MM-DD"
+                due = datetime.strptime(str(item.due_date), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
             pass
 
     created = datetime.now()
     if item.created_at:
         try:
-            created = datetime.fromisoformat(item.created_at)
+            if isinstance(item.created_at, datetime):
+                created = item.created_at
+            else:
+                created = datetime.fromisoformat(str(item.created_at))
         except Exception:
             pass
 
