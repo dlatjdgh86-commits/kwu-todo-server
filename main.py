@@ -23,11 +23,11 @@ from routes.schedules import router as schedules_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 서버 시작 - 학사 데이터 초기 로드 중...")
+    print("[START] 서버 시작 - 학사 데이터 초기 로드 중...")
     # TODO: await crawler.run_initial_crawl()
     # TODO: db.init()
     yield
-    print("🛑 서버 종료")
+    print("[STOP] 서버 종료")
 
 
 # ────────────────────────────────────────────────
