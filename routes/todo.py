@@ -112,6 +112,21 @@ def generate_todos(
         )
         crawled = collector.collect_all()
 
+        # 크롤링 결과가 비어있으면 fake_schedules를 학사일정으로 사용
+        if not crawled.academic_events:
+            from crawler import AcademicEvent
+            crawled.academic_events = [
+                AcademicEvent(
+                    title=s["title"],
+                    start_date=s["start_date"],
+                    end_date=s.get("end_date"),
+                    category=s.get("category", ""),
+                    source=s.get("source", "kwangwoon"),
+                )
+                for s in fake_schedules
+            ]
+            logger.info(f"[generate_todos] 크롤링 결과 없음 -> fake_schedules {len(crawled.academic_events)}개 사용")
+
         # period_days 범위 필터
         crawled.academic_events = [
             e for e in crawled.academic_events
@@ -137,7 +152,9 @@ def generate_todos(
         )
 
     except Exception as e:
-        logger.warning(f"[generate_todos] LLM 파이프라인 실패 → 임시 데이터 사용: {e}")
+        import traceback
+        logger.warning(f"[generate_todos] LLM 파이프라인 실패 -> 임시 데이터 사용: {e}")
+        logger.debug(traceback.format_exc())
 
     # ── 최후 폴백: fake_schedules 기반 임시 로직 ────
     target_schedules = [
