@@ -82,7 +82,7 @@ class ClaudeClient(BaseLLMClient):
     환경변수 ANTHROPIC_API_KEY 필요
     """
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-sonnet-4-6"
 
     def __init__(self, api_key: str = None, model: str = None):
         try:
