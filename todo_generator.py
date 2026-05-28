@@ -1,6 +1,43 @@
 """
 todo_generator.py
 크롤링 데이터 + LLM을 활용한 TODO 자동 생성 및 우선순위 계산 모듈
+
+[이 파일의 역할]
+─────────────────────────────────────────────────────────
+  [CLI 파이프라인]
+  DataCollector (crawler.py)
+      └─→ CrawledData
+              └─→ TodoGenerator (이 파일)
+                      └─→ LLM (llm_client.py)
+                              └─→ TodoList (출력/저장)
+
+  [웹 대시보드 파이프라인 — app.py]
+  KLASClient (klas_crawler.py)
+      └─→ TodayTask 목록
+              └─→ 브라우저 렌더링 (app.py)
+  * 웹 대시보드에 LLM 요약 기능을 추가하려면:
+    app.py의 api_tasks() 라우트에서 run_pipeline()을 호출하면 됩니다.
+
+[두 파이프라인을 합치는 방법 (app.py에 추가)]
+    from crawler import DataCollector
+    from todo_generator import run_pipeline
+
+    @app.route("/api/todo-list")
+    def api_todo_list():
+        student_id = session.get("student_id")
+        client = _klas_clients.get(student_id)
+        if not client:
+            return jsonify({"redirect": "/"})
+
+        # LMS 계정도 KLAS와 동일하게 사용
+        collector = DataCollector(
+            lms_username=student_id,
+            lms_password="...",   # 세션에서 안전하게 가져와야 함
+        )
+        data = collector.collect_all()
+        todo_list = run_pipeline(data, llm_provider="claude", output_format="json")
+        return jsonify(todo_list.to_dict())
+─────────────────────────────────────────────────────────
 """
 
 import json
@@ -22,6 +59,14 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 
 class Priority(IntEnum):
+    """
+    우선순위 레벨
+
+    [klas_crawler.py와의 비교]
+    klas_crawler.TodayTask.priority: 1~3 (긴급/높음/보통)
+    todo_generator.Priority:         1~4 (긴급/높음/보통/여유)
+    더 세밀한 분류가 필요하면 TodayTask.priority도 4단계로 확장 가능합니다.
+    """
     CRITICAL = 1   # 긴급 (48시간 이내 마감 또는 매우 중요)
     HIGH     = 2   # 높음 (3~7일 이내)
     MEDIUM   = 3   # 보통 (1~2주)
@@ -38,6 +83,25 @@ PRIORITY_LABELS = {
 
 @dataclass
 class TodoItem:
+    """
+    개별 TODO 항목
+
+    [연동] app.py에서 TodoList.to_dict()로 직렬화되어 JSON API 응답에 사용됩니다.
+           app.py의 대시보드와 합치려면 TodayTask(klas_crawler.py)를
+           TodoItem으로 변환하는 어댑터 함수를 추가할 수 있습니다.
+
+    [TodayTask → TodoItem 변환 예시]
+        def from_today_task(task: TodayTask) -> TodoItem:
+            return TodoItem(
+                id=f"klas_{uuid.uuid4().hex[:6]}",
+                title=task.title,
+                description=task.description,
+                category=task.task_type,
+                priority=task.priority,
+                due_date=task.due_date.strftime("%Y-%m-%d") if task.due_date else None,
+                source="klas",
+            )
+    """
     id: str
     title: str
     description: str
@@ -74,6 +138,15 @@ class TodoItem:
 
 @dataclass
 class TodoList:
+    """
+    TODO 목록 컨테이너
+
+    [연동]
+    - todo_generator.py의 run_pipeline()이 반환합니다.
+    - app.py에서 /api/todo-list 엔드포인트를 추가할 때 to_dict()로
+      JSON 직렬화하여 반환할 수 있습니다.
+    - to_json()으로 파일 저장도 가능합니다 (save_json 파라미터).
+    """
     items: List[TodoItem] = field(default_factory=list)
     summary: str = ""
     generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -110,6 +183,10 @@ class PriorityCalculator:
     """
     마감일, 카테고리, 키워드를 기반으로 우선순위를 계산합니다.
     LLM 없이도 빠르게 우선순위를 결정할 수 있는 규칙 기반 엔진.
+
+    [연동] klas_crawler.py의 KLASClient._parse_due()와 비슷한 역할을 하지만
+           더 세밀한 4단계 우선순위를 계산합니다.
+           두 계산 로직을 통합하려면 utils.py의 공통 함수로 분리를 고려하세요.
     """
 
     # 카테고리별 가중치 (낮을수록 중요)
@@ -185,7 +262,13 @@ class PriorityCalculator:
 # ──────────────────────────────────────────────
 
 class TodoParser:
-    """LLM이 반환한 JSON을 TodoItem 리스트로 변환"""
+    """
+    LLM이 반환한 JSON을 TodoItem 리스트로 변환
+
+    [연동] llm_client.py의 BaseLLMClient.chat_json()이 반환한
+           dict/list를 TodoItem 리스트로 변환합니다.
+           llm_client.PromptTemplates의 JSON 스키마와 맞춰져 있습니다.
+    """
 
     @staticmethod
     def parse(raw: Union[dict, list]) -> List[TodoItem]:
@@ -227,10 +310,17 @@ class TodoGenerator:
     크롤링 데이터 → LLM → TODO 리스트 생성기
 
     동작 흐름:
-    1. CrawledData를 프롬프트로 변환
-    2. LLM에 전송하여 TODO JSON 생성
-    3. 규칙 기반 우선순위로 검증/보완
+    1. CrawledData를 프롬프트로 변환 (llm_client.PromptTemplates 사용)
+    2. LLM에 전송하여 TODO JSON 생성 (llm_client.BaseLLMClient 사용)
+    3. 규칙 기반 우선순위로 검증/보완 (PriorityCalculator 사용)
     4. TodoList 반환
+
+    [app.py 연동 시 주의사항]
+    app.py는 Flask 웹 서버이므로 LLM 호출(수 초 소요)이 블로킹됩니다.
+    실제 서비스에서는 아래 방법 중 하나를 사용하세요:
+    - threading.Thread로 비동기 처리
+    - celery 등 태스크 큐 사용
+    - /api/tasks는 빠른 KLAS 크롤링만, /api/todo-llm은 LLM 요약 별도 엔드포인트로 분리
     """
 
     def __init__(self, llm_client: BaseLLMClient, use_rule_fallback: bool = True):
@@ -243,12 +333,16 @@ class TodoGenerator:
         self.calculator = PriorityCalculator()
         self.use_rule_fallback = use_rule_fallback
 
-    def generate(self, data: CrawledData) -> TodoList:
+    def generate(self, data: CrawledData) -> "TodoList":
         """
         메인 진입점: 크롤링 데이터로부터 TODO 리스트 생성
 
         Args:
             data: crawler.py의 DataCollector가 반환한 CrawledData
+                  [연동] app.py에서 DataCollector와 함께 사용 시:
+                         collector = DataCollector(lms_username=..., ...)
+                         data = collector.collect_all()
+                         todo_list = generator.generate(data)
 
         Returns:
             TodoList (우선순위 정렬 포함)
@@ -280,6 +374,10 @@ class TodoGenerator:
     def _generate_with_llm(
         self, data: CrawledData, today_str: str
     ) -> Tuple[List[TodoItem], str]:
+        """
+        [연동] llm_client.PromptTemplates.build_todo_prompt()로 프롬프트 생성 후
+               llm_client.BaseLLMClient.chat_json()으로 LLM 호출
+        """
         prompt = PromptTemplates.build_todo_prompt(
             academic_events=data.academic_events,
             lms_assignments=data.lms_assignments,
@@ -297,10 +395,18 @@ class TodoGenerator:
     def _generate_with_rules(
         self, data: CrawledData
     ) -> Tuple[List[TodoItem], str]:
-        """LLM 없이 규칙만으로 TODO 생성 (폴백)"""
+        """
+        LLM 없이 규칙만으로 TODO 생성 (폴백)
+
+        [사용 시나리오]
+        - ANTHROPIC_API_KEY가 없을 때
+        - LLM API 호출 실패 시
+        - 빠른 응답이 필요한 app.py 웹 대시보드에서 기본 목록 먼저 표시할 때
+        """
         todos: List[TodoItem] = []
 
         # 학사 일정 → TODO
+        # [연동] crawler.KwangwoonAcademicCalendarCrawler가 수집한 데이터
         for i, event in enumerate(data.academic_events):
             priority, reason = self.calculator.calculate(
                 title=event.title,
@@ -321,6 +427,9 @@ class TodoGenerator:
             ))
 
         # LMS 과제 → TODO
+        # [연동] crawler.LMSCrawler가 수집한 데이터
+        #        klas_crawler.KLASClient의 KLAS 과제와 중복될 수 있으므로
+        #        실제 운영 시 중복 제거 로직(_deduplicate) 활용 권장
         for i, assignment in enumerate(data.lms_assignments):
             due_str = assignment.due_date.strftime("%Y-%m-%d") if assignment.due_date else None
             priority, reason = self.calculator.calculate(
@@ -342,6 +451,7 @@ class TodoGenerator:
             ))
 
         # 에브리타임 → TODO (시험 관련만)
+        # [주의] 에브리타임 크롤링이 정상 작동하지 않으면 이 블록은 실행되지 않습니다.
         for i, post in enumerate(data.everytime_posts):
             if "시험" in post.keywords or "과제" in post.keywords:
                 todos.append(TodoItem(
@@ -363,6 +473,10 @@ class TodoGenerator:
         """
         LLM이 생성한 우선순위를 규칙 기반으로 검증하고 필요 시 보정
         - LLM이 너무 낮게 설정한 긴급 마감 항목을 상향
+
+        [연동] PriorityCalculator.calculate()를 사용합니다.
+               klas_crawler.KLASClient._parse_due()의 우선순위 판단과
+               같은 기준(마감일 기반)을 사용하므로 일관성이 있습니다.
         """
         for todo in todos:
             rule_priority, rule_reason = self.calculator.calculate(
@@ -382,7 +496,13 @@ class TodoGenerator:
         return todos
 
     def _deduplicate(self, todos: List[TodoItem]) -> List[TodoItem]:
-        """유사한 제목의 TODO 중복 제거"""
+        """
+        유사한 제목의 TODO 중복 제거
+
+        [연동 주의]
+        KLAS(klas_crawler.py)와 LMS(crawler.py) 양쪽에서
+        동일한 과제가 수집될 수 있습니다. 이 함수로 자동 제거됩니다.
+        """
         seen_titles: Set[str] = set()
         unique: List[TodoItem] = []
         for todo in todos:
@@ -401,12 +521,16 @@ class PriorityRefiner:
     """
     생성된 TODO 목록을 LLM으로 다시 검토하여 우선순위를 정밀하게 조정.
     TodoGenerator.generate() 이후 옵션으로 실행 가능.
+
+    [성능 고려]
+    LLM 호출이 2번(generate + refine) 발생하므로 비용이 2배입니다.
+    app.py 웹 대시보드에서는 refine_priorities=False(기본값)를 권장합니다.
     """
 
     def __init__(self, llm_client: BaseLLMClient):
         self.llm = llm_client
 
-    def refine(self, todo_list: TodoList) -> TodoList:
+    def refine(self, todo_list: "TodoList") -> "TodoList":
         logger.info("[PriorityRefiner] LLM 기반 우선순위 재검토 중...")
         today_str = date.today().strftime("%Y년 %m월 %d일")
         todos_json = json.dumps(
@@ -442,10 +566,18 @@ class PriorityRefiner:
 # ──────────────────────────────────────────────
 
 class TodoFormatter:
-    """TodoList를 다양한 형식으로 출력"""
+    """
+    TodoList를 다양한 형식으로 출력
+
+    [연동]
+    - "terminal": CLI 실행 시 터미널 출력
+    - "markdown": 파일 저장 또는 문서화
+    - "json":     app.py의 API 응답으로 활용 가능
+                  (to_terminal/to_markdown 대신 TodoList.to_json() 직접 사용도 가능)
+    """
 
     @staticmethod
-    def to_terminal(todo_list: TodoList) -> str:
+    def to_terminal(todo_list: "TodoList") -> str:
         lines = [
             "=" * 60,
             f"📋 TODO 목록  |  생성: {todo_list.generated_at[:10]}",
@@ -472,7 +604,7 @@ class TodoFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def to_markdown(todo_list: TodoList) -> str:
+    def to_markdown(todo_list: "TodoList") -> str:
         lines = [
             f"# 📋 TODO 목록",
             f"> 생성일: {todo_list.generated_at[:10]}  |  {todo_list.summary}",
@@ -508,7 +640,7 @@ def run_pipeline(
     output_format: str = "terminal",
     refine_priorities: bool = False,
     save_json: str = None,
-) -> TodoList:
+) -> "TodoList":
     """
     크롤링 데이터 → TODO 생성까지 원스톱 실행
 
@@ -517,10 +649,21 @@ def run_pipeline(
         llm_provider: "claude" 또는 "openai"
         output_format: "terminal" | "markdown" | "json"
         refine_priorities: True이면 LLM 기반 우선순위 재검토 실행
+                           [주의] app.py 연동 시 응답 지연 발생 → False 권장
         save_json: 파일 경로 지정 시 JSON 저장
 
     Returns:
         TodoList
+
+    [app.py 연동 예시]
+        # /api/todo-list 엔드포인트에서 호출
+        from crawler import DataCollector
+        from todo_generator import run_pipeline
+
+        collector = DataCollector(lms_username=student_id, lms_password=pw)
+        data = collector.collect_all()
+        todo_list = run_pipeline(data, output_format="json")
+        return jsonify(todo_list.to_dict())
     """
     client = create_llm_client(llm_provider)
     generator = TodoGenerator(client)
@@ -554,6 +697,14 @@ def run_pipeline(
 if __name__ == "__main__":
     from crawler import DataCollector
 
+    # ── CLI 단독 실행 예시 ──
+    # 웹 대시보드(app.py)와 별개로 터미널에서 TODO 목록을 생성할 때 사용합니다.
+    #
+    # 웹 대시보드와 함께 사용:
+    #   python app.py 실행 후 브라우저에서 로그인
+    #   → klas_crawler.KLASClient가 오늘 할 일을 자동 수집
+    #   → (선택) /api/todo-list 엔드포인트 추가 시 LLM TODO도 표시 가능
+
     # 1. 데이터 수집
     collector = DataCollector(
         lms_username="학번",
@@ -568,6 +719,6 @@ if __name__ == "__main__":
         crawled_data=data,
         llm_provider="claude",       # "openai"로 교체 가능
         output_format="terminal",
-        refine_priorities=True,      # 우선순위 LLM 재검토
+        refine_priorities=True,      # 우선순위 LLM 재검토 (app.py 연동 시 False 권장)
         save_json="todos.json",      # JSON 파일로 저장
     )
