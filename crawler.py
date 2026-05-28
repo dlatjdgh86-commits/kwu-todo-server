@@ -1,6 +1,24 @@
 """
 crawler.py
 광운대학교 학사 일정, LMS, 에브리타임 데이터 수집 모듈
+
+[아키텍처 개요]
+─────────────────────────────────────────────────────────
+이 파일(crawler.py)은 기존 크롤링 모듈입니다.
+새로 추가된 파일과의 관계:
+
+  crawler.py         ← 지금 이 파일 (학사일정 / LMS / 에브리타임 크롤링)
+  klas_crawler.py    ← 신규: 실제 KLAS 로그인 + 오늘 할 일 수집
+  llm_client.py      ← LLM API 호출 (변경 없음)
+  todo_generator.py  ← TODO 생성 파이프라인 (변경 없음)
+  app.py             ← 신규: Flask 웹 서버 + 로그인 UI + 대시보드
+
+[데이터 흐름]
+  app.py
+    └─ KLASClient (klas_crawler.py) ─→ 로그인 인증 + 오늘 할 일 수집
+    └─ DataCollector (crawler.py)   ─→ 학사일정 + LMS 과제 + 에브리타임 수집
+         └─ TodoGenerator (todo_generator.py) ─→ LLM 기반 TODO 생성
+─────────────────────────────────────────────────────────
 """
 
 import re
@@ -22,7 +40,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AcademicEvent:
-    """학사 일정 이벤트"""
+    """
+    학사 일정 이벤트
+    [연동] todo_generator.py의 TodoGenerator.generate()에서
+           CrawledData.academic_events 필드로 사용됩니다.
+    """
     title: str
     start_date: date
     end_date: Optional[date] = None
@@ -31,7 +53,11 @@ class AcademicEvent:
 
 @dataclass
 class LMSAssignment:
-    """LMS 과제/퀴즈"""
+    """
+    LMS 과제/퀴즈
+    [연동] todo_generator.py의 TodoGenerator.generate()에서
+           CrawledData.lms_assignments 필드로 사용됩니다.
+    """
     course_name: str
     title: str
     due_date: Optional[datetime] = None
@@ -41,7 +67,14 @@ class LMSAssignment:
 
 @dataclass
 class EverytimePost:
-    """에브리타임 게시글"""
+    """
+    에브리타임 게시글
+    [변경 안내] 직접 크롤링 대신 사용자가 ICS URL을 붙여넣는 방식으로
+               EverytimeCalendarParser(별도 구현 가능)로 대체를 권장합니다.
+               현재는 기존 크롤러 코드를 유지합니다.
+    [연동] todo_generator.py의 TodoGenerator.generate()에서
+           CrawledData.everytime_posts 필드로 사용됩니다.
+    """
     board: str              # 시험정보 / 강의평가 / 자유 등
     title: str
     body: str
@@ -58,6 +91,12 @@ class KwangwoonAcademicCalendarCrawler:
     """
     광운대학교 학사 일정 페이지 크롤러
     URL: https://www.kw.ac.kr/ko/life/academic-calendar.jsp
+
+    [연동] klas_crawler.py의 KLASClient._fetch_academic_calendar()에서도
+           동일한 URL을 사용해 이번 주 학사일정을 수집합니다.
+           - KLASClient: 로그인 세션 기반, 7일 이내 이벤트만 필터링
+           - 이 클래스:  로그인 불필요, 학기 전체 이벤트 수집
+           용도에 따라 선택해서 사용하세요.
     """
 
     BASE_URL = "https://www.kw.ac.kr"
@@ -93,6 +132,9 @@ class KwangwoonAcademicCalendarCrawler:
     def _parse_date_range(self, raw: str) -> Tuple[Optional[date], Optional[date]]:
         """
         '2025.03.04 ~ 2025.03.07' 또는 '2025.03.04' 형태 파싱
+        [참고] klas_crawler.py의 KLASClient._parse_simple_date()와
+               유사한 역할을 합니다. 날짜 파싱 로직을 통합하려면
+               별도 utils.py로 분리를 고려하세요.
         """
         raw = raw.strip()
         parts = re.split(r"[~\-–]", raw)
@@ -184,6 +226,16 @@ class LMSCrawler:
     광운대 LMS (e-루리, Moodle 기반) 과제/퀴즈 수집
     로그인 세션을 유지하며 대시보드에서 마감 임박 항목을 파싱합니다.
 
+    [KLAS vs LMS 차이]
+    ┌──────────────┬─────────────────────────────┬──────────────────────────────┐
+    │              │ klas_crawler.KLASClient      │ crawler.LMSCrawler           │
+    ├──────────────┼─────────────────────────────┼──────────────────────────────┤
+    │ 로그인 대상  │ klas.kw.ac.kr (KLAS)         │ lms.kw.ac.kr (e-루리/Moodle) │
+    │ 수집 내용    │ 오늘 할 일 대시보드 전체     │ 과제/퀴즈 마감 목록          │
+    │ 사용 위치    │ app.py 웹 대시보드           │ todo_generator.py 파이프라인  │
+    └──────────────┴─────────────────────────────┴──────────────────────────────┘
+    두 시스템의 계정(학번/비밀번호)은 동일하나 URL이 다릅니다.
+
     사용법:
         crawler = LMSCrawler(username="학번", password="비밀번호")
         assignments = crawler.crawl()
@@ -232,6 +284,11 @@ class LMSCrawler:
             return False
 
     def _parse_due_date(self, raw: str) -> Optional[datetime]:
+        """
+        마감일 문자열 파싱
+        [참고] klas_crawler.py의 KLASClient._parse_due()와 동일한 역할입니다.
+               두 파서를 utils.py의 공통 함수로 통합하면 중복을 줄일 수 있습니다.
+        """
         patterns = [
             "%Y년 %m월 %d일 %H시 %M분",
             "%Y-%m-%d %H:%M",
@@ -312,6 +369,30 @@ class EverytimeCrawler:
     - 로그인 후 쿠키 기반 세션 유지
     - 시험정보 / 강의평가 / 공지 게시판 수집
     - 키워드 기반 필터링 지원
+
+    ⚠️  [크롤링 한계 안내]
+    에브리타임은 React SPA 기반 동적 렌더링을 사용하므로
+    BeautifulSoup 단독으로는 파싱이 되지 않을 수 있습니다.
+    아래 두 가지 대안을 권장합니다:
+
+    [대안 A] ICS URL 방식 (권장)
+        에브리타임 앱 → 시간표 → 외부 공유 URL 복사
+        → 프로그램에 붙여넣기 → ics 파일 파싱
+        구현 예시:
+            import requests
+            from icalendar import Calendar
+            ics_url = "https://everytime.kr/@사용자토큰/ical"
+            cal = Calendar.from_ical(requests.get(ics_url).content)
+
+    [대안 B] 사용자 직접 텍스트 입력
+        에브리타임에서 강의평/게시글 복사 → 붙여넣기
+        → llm_client.py의 ClaudeClient로 분석 요약
+        구현 예시 (todo_generator.py에서 활용):
+            client = create_llm_client("claude")
+            summary = client.chat(
+                user_message=f"다음 강의평을 분석해서 핵심만 요약해줘:\\n{user_pasted_text}",
+                system_prompt="대학생 학습 도우미"
+            )
 
     주의: 에브리타임 이용약관을 준수하여 과도한 요청을 지양하세요.
     """
@@ -433,6 +514,21 @@ class EverytimeCrawler:
 
 @dataclass
 class CrawledData:
+    """
+    모든 크롤러의 수집 결과를 담는 컨테이너
+
+    [연동] todo_generator.py의 TodoGenerator.generate(data: CrawledData)에
+           그대로 전달됩니다.
+
+    [app.py와의 관계]
+    app.py의 웹 대시보드는 klas_crawler.KLASClient를 직접 사용하므로
+    CrawledData를 거치지 않습니다. CrawledData는 CLI 파이프라인
+    (todo_generator.run_pipeline)에서 사용됩니다.
+
+    두 파이프라인 비교:
+      [웹 대시보드]  app.py → KLASClient → TodayTask 목록 → 브라우저 렌더링
+      [CLI 파이프라인] DataCollector → CrawledData → TodoGenerator → TodoList 출력
+    """
     academic_events: List[AcademicEvent] = field(default_factory=list)
     lms_assignments: List[LMSAssignment] = field(default_factory=list)
     everytime_posts: List[EverytimePost] = field(default_factory=list)
@@ -446,7 +542,24 @@ class CrawledData:
 
 
 class DataCollector:
-    """모든 크롤러를 통합 실행하는 퍼사드 클래스"""
+    """
+    모든 크롤러를 통합 실행하는 퍼사드 클래스
+
+    [사용 위치]
+    - todo_generator.py의 run_pipeline() 함수에서 호출됩니다.
+    - app.py 웹 서버는 이 클래스 대신 klas_crawler.KLASClient를
+      직접 사용합니다. (KLAS 세션 재사용을 위해)
+
+    [확장 방법]
+    웹 대시보드(app.py)에서 LLM 기반 TODO 생성까지 원할 때:
+        # app.py의 api_tasks() 라우트에서 추가 가능
+        from crawler import DataCollector
+        from todo_generator import run_pipeline
+
+        collector = DataCollector(lms_username=..., lms_password=...)
+        data = collector.collect_all()
+        todo_list = run_pipeline(data, llm_provider="claude")
+    """
 
     def __init__(
         self,
@@ -468,15 +581,23 @@ class DataCollector:
         data = CrawledData()
 
         # 1. 학사 일정
+        # [연동] 수집된 결과는 CrawledData.academic_events에 저장되고
+        #        todo_generator.py의 PromptTemplates.build_todo_prompt()에서
+        #        LLM 프롬프트로 변환됩니다.
         data.academic_events = self.academic_crawler.crawl()
 
         # 2. LMS 과제
+        # [연동] lms_username이 없으면 건너뜁니다.
+        #        app.py에서 받은 학번/비밀번호를 여기에도 전달하면
+        #        LMS 과제까지 함께 수집할 수 있습니다.
         if self.lms_crawler:
             data.lms_assignments = self.lms_crawler.crawl()
         else:
             logger.info("[LMS] 계정 미설정 - 건너뜁니다")
 
         # 3. 에브리타임
+        # [주의] 동적 렌더링 이슈로 수집이 안 될 수 있습니다.
+        #        EverytimeCrawler 클래스의 docstring에서 대안을 확인하세요.
         if self.everytime_crawler:
             data.everytime_posts = self.everytime_crawler.crawl()
         else:
@@ -491,10 +612,17 @@ class DataCollector:
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # ── CLI 파이프라인 단독 실행 예시 ──
+    # 웹 대시보드(app.py)를 쓰지 않고 터미널에서 직접 실행할 때 사용합니다.
+    #
+    # 웹 대시보드와 함께 쓰는 경우:
+    #   python app.py 실행 후 http://localhost:5000 접속
+    #   → 로그인하면 klas_crawler.KLASClient가 자동으로 데이터를 수집합니다.
+
     collector = DataCollector(
         lms_username="학번",
         lms_password="비밀번호",
-        everytime_username="에브리타임_아이디",
+        everytime_username="에브리타임_아이디",   # 수집 안 될 수 있음 (위 주의사항 참고)
         everytime_password="에브리타임_비밀번호",
     )
     result = collector.collect_all()
