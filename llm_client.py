@@ -1,6 +1,31 @@
 """
 llm_client.py
 LLM API 호출 추상화 모듈 - Claude(Anthropic) 및 OpenAI 지원
+
+[이 파일의 역할]
+─────────────────────────────────────────────────────────
+  crawler.py / klas_crawler.py  →  데이터 수집
+  llm_client.py                 →  LLM 호출 (지금 이 파일)
+  todo_generator.py             →  LLM 결과로 TODO 생성
+  app.py                        →  웹 UI 서버
+
+[app.py와의 연동 포인트]
+  현재 app.py는 LLM을 직접 호출하지 않습니다.
+  아래 기능을 추가하려면 app.py에서 이 파일을 import하세요:
+
+  1. 로그인 후 강의평 분석 요약:
+       from llm_client import create_llm_client
+       client = create_llm_client("claude")
+       summary = client.chat(user_message=강의평_텍스트, system_prompt=...)
+
+  2. 오늘 할 일 자연어 요약:
+       from llm_client import create_llm_client
+       from todo_generator import run_pipeline
+       # api_tasks() 라우트에서 호출 가능
+
+  3. 에브리타임 붙여넣기 텍스트 분석:
+       client.chat_json(user_message=에타_게시글, system_prompt=분석_프롬프트)
+─────────────────────────────────────────────────────────
 """
 
 import os
@@ -19,6 +44,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMResponse:
+    """
+    LLM API 응답 래퍼
+
+    [연동] todo_generator.py의 TodoGenerator._generate_with_llm()에서
+           chat_json()을 통해 JSON으로 자동 파싱됩니다.
+    """
     content: str
     model: str
     input_tokens: int = 0
@@ -41,7 +72,13 @@ class LLMResponse:
 # ──────────────────────────────────────────────
 
 class BaseLLMClient(ABC):
-    """모든 LLM 클라이언트의 공통 인터페이스"""
+    """
+    모든 LLM 클라이언트의 공통 인터페이스
+
+    [연동] todo_generator.py의 TodoGenerator, PriorityRefiner가
+           이 인터페이스 타입을 받습니다.
+           ClaudeClient / OpenAIClient 중 어느 것이든 교체 가능합니다.
+    """
 
     @abstractmethod
     def chat(
@@ -59,7 +96,13 @@ class BaseLLMClient(ABC):
         system_prompt: str = "",
         max_tokens: int = 2048,
     ) -> Union[dict, list]:
-        """JSON 응답을 자동 파싱하여 반환"""
+        """
+        JSON 응답을 자동 파싱하여 반환
+
+        [연동] todo_generator.py에서 주로 이 메서드를 사용합니다.
+               - TodoGenerator._generate_with_llm(): TODO 목록 생성
+               - PriorityRefiner.refine(): 우선순위 재검토
+        """
         json_system = (
             system_prompt + "\n\n반드시 JSON 형식으로만 응답하세요. "
             "마크다운 코드펜스나 추가 텍스트 없이 순수 JSON만 출력하세요."
@@ -80,6 +123,19 @@ class ClaudeClient(BaseLLMClient):
     """
     Anthropic Claude API 클라이언트
     환경변수 ANTHROPIC_API_KEY 필요
+
+    [설정 방법]
+    터미널에서:
+        export ANTHROPIC_API_KEY="sk-ant-..."
+    또는 프로젝트 루트에 .env 파일 생성:
+        ANTHROPIC_API_KEY=sk-ant-...
+    그리고 app.py / todo_generator.py 상단에:
+        from dotenv import load_dotenv; load_dotenv()
+
+    [app.py 연동 예시]
+    app.py에서 LLM 기능을 추가할 때:
+        client = ClaudeClient()  # 환경변수에서 키 자동 로드
+        response = client.chat("오늘 할 일을 요약해줘")
     """
 
     DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -137,6 +193,11 @@ class OpenAIClient(BaseLLMClient):
     """
     OpenAI GPT API 클라이언트
     환경변수 OPENAI_API_KEY 필요
+
+    [ClaudeClient vs OpenAIClient 선택 기준]
+    - 한국어 처리: 둘 다 우수하나 Claude가 한국어 문맥 이해가 약간 더 자연스러움
+    - 비용: 모델별로 다르나 gpt-4o-mini / claude-haiku가 저렴
+    - 전환 방법: create_llm_client("openai") 로 즉시 교체 가능
     """
 
     DEFAULT_MODEL = "gpt-4o"
@@ -192,7 +253,18 @@ class OpenAIClient(BaseLLMClient):
 # ──────────────────────────────────────────────
 
 class PromptTemplates:
-    """TODO 생성에 사용할 프롬프트 모음"""
+    """
+    TODO 생성에 사용할 프롬프트 모음
+
+    [연동] todo_generator.py의 TodoGenerator._generate_with_llm()과
+           PriorityRefiner.refine()에서 사용됩니다.
+
+    [확장 아이디어]
+    app.py에서 아래 프롬프트를 추가로 활용할 수 있습니다:
+    - build_lecture_review_prompt(): 강의평 분석 요약
+    - build_exam_tip_prompt(): 시험 꿀팁 추출
+    - build_daily_summary_prompt(): 오늘 할 일 자연어 요약
+    """
 
     SYSTEM_TODO_GENERATOR = """
 당신은 대학생의 학습 관리를 돕는 스마트 TODO 생성 어시스턴트입니다.
@@ -214,7 +286,12 @@ class PromptTemplates:
         everytime_posts: list,
         today_str: str,
     ) -> str:
-        """TODO 생성용 프롬프트 빌드"""
+        """
+        TODO 생성용 프롬프트 빌드
+
+        [연동] crawler.py의 DataCollector.collect_all()이 반환한
+               CrawledData의 각 필드를 인자로 받습니다.
+        """
         lines = [f"오늘 날짜: {today_str}\n"]
 
         # 학사 일정
@@ -236,6 +313,8 @@ class PromptTemplates:
             lines.append("- 없음")
 
         # 에브리타임
+        # [주의] 에브리타임 크롤링이 실패한 경우 이 섹션은 비어있을 수 있습니다.
+        #        ICS URL 방식이나 사용자 직접 입력으로 대체 시 여기에 데이터가 채워집니다.
         lines.append("\n## 에브리타임 주요 게시글")
         if everytime_posts:
             for p in everytime_posts[:5]:
@@ -272,7 +351,11 @@ class PromptTemplates:
 
     @staticmethod
     def build_priority_prompt(todos_json: str, today_str: str) -> str:
-        """생성된 TODO의 우선순위 재검토 프롬프트"""
+        """
+        생성된 TODO의 우선순위 재검토 프롬프트
+
+        [연동] todo_generator.py의 PriorityRefiner.refine()에서 사용됩니다.
+        """
         return f"""
 오늘 날짜: {today_str}
 
@@ -293,12 +376,23 @@ def create_llm_client(provider: str = "claude", **kwargs) -> BaseLLMClient:
     """
     LLM 클라이언트 팩토리
 
+    [연동] todo_generator.py의 run_pipeline()과
+           app.py에서 LLM 기능 추가 시 이 함수를 사용합니다.
+
     Args:
         provider: "claude" 또는 "openai"
         **kwargs: api_key, model 등 클라이언트별 옵션
 
     Returns:
         BaseLLMClient 인스턴스
+
+    사용 예시:
+        # todo_generator.py에서
+        client = create_llm_client("claude")
+
+        # app.py에서 LLM 기능 추가 시
+        client = create_llm_client("claude")
+        summary = client.chat("오늘 할 일 요약해줘")
     """
     provider = provider.lower()
     if provider in ("claude", "anthropic"):
@@ -314,7 +408,9 @@ def create_llm_client(provider: str = "claude", **kwargs) -> BaseLLMClient:
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Claude 테스트
+    # 단독 실행 시 연결 테스트
+    # [주의] ANTHROPIC_API_KEY 환경변수가 설정되어 있어야 합니다.
+    #        app.py를 통해 웹 대시보드만 사용한다면 이 테스트는 불필요합니다.
     client = create_llm_client("claude")
     response = client.chat(
         user_message="안녕하세요! 간단한 연결 테스트입니다.",
